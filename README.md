@@ -9,23 +9,6 @@ PrayerShield is a small Python daemon that automatically cuts and restores your 
 
 ---
 
-## Table of contents
-
-- Features
-- How it works
-- Requirements
-- Installation
-- Configuration
-- Usage
-- Logging
-- Safety notes
-- Roadmap
-- Contributing
-- License
-- Credits
-
----
-
 ## Features
 
 - Fetches daily prayer times from the AlAdhan API using your city and country.  
@@ -215,6 +198,4 @@ This project is licensed under the MIT License – see the [`LICENSE`](LICENSE) 
 - **Huawei LTE API** – Python library used to communicate with the router:  
   - Repository: https://github.com/Salamek/huawei-lte-api  
 - **AlAdhan Prayer Times API** – used to fetch daily prayer times:  
-  - Docs / API: https://aladhan.com/prayer-times-api  
-
-```
+  - Docs / API: https://aladhan.com/prayer-times-api
