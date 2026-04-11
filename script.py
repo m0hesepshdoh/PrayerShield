@@ -13,14 +13,14 @@ from huawei_lte_api.Connection import Connection
 
 # ── Config ────────────────────────────────────────────────────────────────────
 # URL must include router credentials; see huawei-lte-api docs.
-ROUTER_URL = 'http://admin:password@192.168.8.1/'
+ROUTER_URL = 'http://admin:abc123def456@192.168.8.1/'
 CITY = "Jeddah"              # City for AlAdhan 
 COUNTRY = "Saudi Arabia"     # Country for AlAdhan
 
 # Minutes the internet stays OFF for each prayer.
 OFF_DURATIONS = {"Fajr": 35, "Dhuhr": 30, "Asr": 30, "Maghrib": 20, "Isha": 30}
 # Special duration for Friday Jumu'ah
-JUMUAH_DURATION = 40
+JUMUAH_DURATION = 35
 DATA_FILE = "prayer_times.json"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -58,19 +58,50 @@ class PrayerShield:
         
     # ── Internet control ────────────────────────────────────────────────────────
     def restore_internet(self):
-        """Restore internet and verify it's working."""
+        if self.can_reach_internet():
+            logging.info("Internet reachable. No action needed.")
+            return True
+            
+        logging.info("Internet unreachable sending 'ON' command...")
         if self.set_mobile_data(True):
-        # Wait for router to apply changes
+            # Wait for router to apply changes
             time.sleep(5)
             # Verify internet is actually working
             if self.can_reach_internet():
                 logging.info("Internet restored and verified")
-            return True
-        else:
-            logging.warning("Internet turned on but not reachable yet")
+                return True
+        
+        logging.warning("Failed to restore internet or verify connection")
         return False
 
     # ── Router time sync ──────────────────────────────────────────────────────
+    def get_router_time(self):
+        try:
+            with Connection(ROUTER_URL) as conn:
+                raw = Client(conn).s_ntp.timeinfo().get('currentlocaltime', '')
+                dt = datetime.strptime(raw.replace('T', ' '), "%Y-%m-%d %H:%M:%S")
+                return dt if dt.year >= 2024 else None
+        except Exception as e:
+            logging.error(f"Router time error: {e}")
+            return None
+
+    def wait_for_lte_sync(self, timeout=80, interval=10):
+        logging.info("Waiting for LTE time sync...")
+        deadline = time.time() + timeout
+        while self.running and time.time() < deadline:
+            t = self.get_router_time()
+            if t:
+                logging.info(f"LTE synced: {t}")
+                return t
+            logging.warning(f"Not synced yet — retrying in {interval}s")
+            time.sleep(interval)
+        logging.warning("LTE sync timeout — falling back to system time")
+        return datetime.now()
+
+    def sync_clock(self):
+        rt = self.wait_for_lte_sync()
+        self.time_offset = rt - datetime.now()
+        logging.info(f"Clock offset: {self.time_offset}")
 
     def now(self):
         """Current time adjusted to match router/LTE clock."""
@@ -118,52 +149,31 @@ class PrayerShield:
     # ── Prayer times ──────────────────────────────────────────────────────────
 
     def get_prayer_times(self) -> dict | None:
-        """Fetch times and sync clock simultaneously using Aladhan API; falls back to cache."""
+        """Fetch today's prayer times from Aladhan API; fall back to cache."""
         try:
-            if self.can_reach_internet():
-                logging.info("Internet reachable.")
-            else:
-                logging.info("Internet unreachable...")
-                self.set_mobile_data(True)
-                time.sleep(15)
-
             url = (
                 f"https://api.aladhan.com/v1/timingsByCity"
                 f"?city={CITY}&country={COUNTRY}&method=4"
             )
             r = requests.get(url, timeout=15)
             r.raise_for_status()
-            
-            data = r.json()['data']
-            
-            # ── 2. Sync Clock via API Timestamp ──
-            api_timestamp = int(data['date']['timestamp'])
-            api_now = datetime.fromtimestamp(api_timestamp)
-            
-            self.time_offset = api_now - datetime.now()
-            logging.info(f"Clock synced via Aladhan API. Offset: {self.time_offset}")
-
-            # ── 3. Process Prayer Data ──
-            timings = data['timings']
+            timings = r.json()['data']['timings']
             prayers = {
                 k: timings[k].split(' ')[0]
                 for k in ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha']
                 if k in timings
             }
-            
-            # Save to local cache
             with open(DATA_FILE, 'w') as f:
                 json.dump(prayers, f)
-                
             logging.info(f"Prayer times updated: {prayers}")
             return prayers
 
         except Exception as e:
-            logging.error(f"API fetch/sync failed: {e}")
+            logging.error(f"API fetch failed: {e}")
             if os.path.exists(DATA_FILE):
                 with open(DATA_FILE) as f:
                     cached = json.load(f)
-                logging.info("Using cached prayer times (Clock not synced)")
+                logging.info("Using cached prayer times")
                 return cached
             logging.error("No cache available")
             return None
@@ -213,22 +223,23 @@ class PrayerShield:
 
     def run(self):
         logging.info("=== Prayer Shield started ===")
-        self.prayer_data = self.get_prayer_times()
-        self.last_fetch_date = self.now().date() if self.prayer_data else None
-        
+        time.sleep(40)
+        self.sync_clock()
+        if not self.can_reach_internet():
+            self.set_mobile_data(True)
         internet_was_cut = False
 
         while self.running:
             try:
                 now = self.now()
 
+                # Refresh prayer times once per day
                 if self.last_fetch_date != now.date() or not self.prayer_data:
                     self.prayer_data = self.get_prayer_times()
-                    if self.prayer_data:
-                        self.last_fetch_date = now.date()
+                    self.last_fetch_date = now.date()
 
                 if not self.prayer_data:
-                    logging.error("No prayer data — retrying in 5 min")
+                    logging.error("No prayer data available — retrying in 5 min")
                     time.sleep(300)
                     continue
 
@@ -254,10 +265,14 @@ class PrayerShield:
 
                 else:
                     # ── Between prayers: internet must be ON ──
-                    if internet_was_cut:
-                        logging.info("Prayer window ended — restoring internet")
+                    if not self.can_reach_internet():
+                        logging.info("Outside prayer window but internet is OFF — restoring...")
                         self.restore_internet()
                         internet_was_cut = False
+                    else:
+                        if internet_was_cut:
+                            logging.info("Prayer window ended — internet already back online")
+                            internet_was_cut = False
 
                     # Sleep until 60 s before the next prayer
                     name, next_dt = self.get_next_prayer(now)
