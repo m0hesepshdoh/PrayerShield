@@ -6,7 +6,6 @@
 [![Huawei LTE API](https://img.shields.io/badge/powered%20by-huawei--lte--api-blue.svg)](https://github.com/Salamek/huawei-lte-api)
 
 PrayerShield is a small Python daemon that automatically cuts and restores your Huawei LTE router’s mobile data around the five daily prayers (plus Jumu'ah on Fridays). It uses the AlAdhan Prayer Times API to fetch daily timings and the excellent [`huawei-lte-api`](https://github.com/Salamek/huawei-lte-api) library to talk to the router, created by mohammed yousef bafuleh.
-.
 
 ---
 
